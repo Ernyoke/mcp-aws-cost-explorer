@@ -19,6 +19,13 @@ class CostExplorerTest {
     }
 
     @Test
+    void getCostsPerLinkedAccountForTheLastMonth() {
+        String report = costExplorer.getCostPerLinkedAccount("2025-01-01",
+                "2025-02-01", List.of("us-east-1"));
+        System.out.println(report);
+    }
+
+    @Test
     void getDiscounts() {
         String report = costExplorer.getDiscounts("2025-01-01",
                 "2025-02-01", List.of("us-east-1"));

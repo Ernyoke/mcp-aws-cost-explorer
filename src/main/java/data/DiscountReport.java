@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 public record DiscountReport(List<Discount> discounts, Map<String, Double> totalDiscountPerCurrency) {
-    public String build() throws CsvRequiredFieldEmptyException, CsvDataTypeMismatchException {
+    public String generate() throws CsvRequiredFieldEmptyException, CsvDataTypeMismatchException {
         Writer stringWriter = new StringWriter();
         StatefulBeanToCsv<Discount> statefulBeanToCsv = new StatefulBeanToCsvBuilder<Discount>(stringWriter)
                 .withQuotechar('\'')

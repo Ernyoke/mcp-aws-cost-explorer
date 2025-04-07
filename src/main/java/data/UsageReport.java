@@ -12,16 +12,17 @@ import java.io.Writer;
 import java.util.List;
 import java.util.Map;
 
-public record UsageReport(List<Usage> usages, Map<String, Double> totalCostPerCurrency) {
+public record UsageReport<T extends Usage>(List<T> usage,
+                                           Map<String, Double> totalCostPerCurrency) {
 
-    public String build() throws CsvRequiredFieldEmptyException, CsvDataTypeMismatchException {
+    public String generate() throws CsvRequiredFieldEmptyException, CsvDataTypeMismatchException {
         Writer stringWriter = new StringWriter();
-        StatefulBeanToCsv<Usage> statefulBeanToCsv = new StatefulBeanToCsvBuilder<Usage>(stringWriter)
+        StatefulBeanToCsv<T> statefulBeanToCsv = new StatefulBeanToCsvBuilder<T>(stringWriter)
                 .withQuotechar('\'')
                 .withSeparator(CSVWriter.DEFAULT_SEPARATOR)
                 .build();
 
-        statefulBeanToCsv.write(usages);
+        statefulBeanToCsv.write(usage);
 
         return Qute.fmt(
                         """
