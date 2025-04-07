@@ -1,3 +1,7 @@
+import data.Discount;
+import data.DiscountReport;
+import data.Usage;
+import data.UsageReport;
 import io.quarkiverse.mcp.server.Tool;
 import io.quarkiverse.mcp.server.ToolArg;
 import io.quarkiverse.mcp.server.ToolCallException;
@@ -8,7 +12,9 @@ import software.amazon.awssdk.services.costexplorer.model.*;
 
 import java.text.DecimalFormat;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @ApplicationScoped
 public class CostExplorer {
@@ -39,13 +45,7 @@ public class CostExplorer {
             @ToolArg(description = "End date in format of yyyy-MM-dd") String endDate,
             @ToolArg(description = "AWS regions where the costs should be retrieved. In case we want to get the costs for resources in all regions, we should provide an empty list.") List<String> regions
     ) {
-        if (!Utils.isValidDate(startDate)) {
-            throw new ToolCallException("Invalid start date: " + startDate);
-        }
-
-        if (!Utils.isValidDate(endDate)) {
-            throw new ToolCallException("Invalid start date: " + startDate);
-        }
+        Utils.validateStartEndEndDate(startDate, endDate);
 
         List<Expression> filterExpressionList = new ArrayList<>();
 
@@ -70,75 +70,75 @@ public class CostExplorer {
             filterExpression = Expression.builder().and(filterExpressionList).build();
         }
 
-
-        // Create the request
-        GetCostAndUsageRequest request = GetCostAndUsageRequest.builder()
-                .timePeriod(DateInterval.builder()
-                        .start(startDate)
-                        .end(endDate)
-                        .build())
-                .granularity(Granularity.MONTHLY)
-                .metrics(List.of("UnblendedCost"))
-                .filter(filterExpression)
-                .groupBy(GroupDefinition.builder()
-                                .type(GroupDefinitionType.DIMENSION)
-                                .key("SERVICE")
-                                .build(),
-                        GroupDefinition.builder()
-                                .type(GroupDefinitionType.DIMENSION)
-                                .key("OPERATION")
-                                .build()
-                )
-                .build();
-
-        // Get the cost data
-        GetCostAndUsageResponse response = costExplorerClient.getCostAndUsage(request);
-
-        record Usage(String service, String operation, Double value, String currency) {
-        }
-
         List<Usage> usages = new ArrayList<>();
+        Map<String, Double> totalCostPerCurrency = new HashMap<>();
 
-        for (ResultByTime result : response.resultsByTime()) {
-            for (Group group : result.groups()) {
-                double cost = Double.parseDouble(group.metrics().get("UnblendedCost").amount());
+        String nextPageToken = null;
 
-                String serviceName = group.keys().getFirst();
-                String operation = group.keys().getLast();
-                String currency = group.metrics().get("UnblendedCost").unit();
-                usages.add(new Usage(serviceName, operation, cost, currency));
+        do {
+            // Create the request
+            GetCostAndUsageRequest request = GetCostAndUsageRequest.builder()
+                    .timePeriod(DateInterval.builder()
+                            .start(startDate)
+                            .end(endDate)
+                            .build())
+                    .granularity(Granularity.MONTHLY)
+                    .metrics(List.of("UnblendedCost"))
+                    .filter(filterExpression)
+                    .groupBy(GroupDefinition.builder()
+                                    .type(GroupDefinitionType.DIMENSION)
+                                    .key("SERVICE")
+                                    .build(),
+                            GroupDefinition.builder()
+                                    .type(GroupDefinitionType.DIMENSION)
+                                    .key("OPERATION")
+                                    .build()
+                    )
+                    .nextPageToken(nextPageToken)
+                    .build();
+
+            // Get the cost data
+            GetCostAndUsageResponse response = costExplorerClient.getCostAndUsage(request);
+            for (ResultByTime result : response.resultsByTime()) {
+                for (Group group : result.groups()) {
+                    double cost = Double.parseDouble(group.metrics().get("UnblendedCost").amount());
+
+                    String serviceName = group.keys().getFirst();
+                    String operation = group.keys().getLast();
+                    String currency = group.metrics().get("UnblendedCost").unit();
+                    usages.add(new Usage.Builder()
+                            .serviceName(serviceName)
+                            .operation(operation)
+                            .currency(currency)
+                            .value(cost)
+                            .build());
+
+                    totalCostPerCurrency.compute(currency, (key, value) -> value == null ? 0 : value + cost);
+                }
             }
+
+            nextPageToken = response.nextPageToken();
+        } while (nextPageToken != null);
+
+        usages.sort((a, b) -> Double.compare(b.value(), a.value()));
+
+        UsageReport usageReport = new UsageReport(usages, totalCostPerCurrency);
+
+        try {
+            return usageReport.build();
+        } catch (Exception e) {
+            throw new ToolCallException("Could not create report!", e);
         }
-
-        usages.sort((a, b) -> Double.compare(b.value, a.value));
-
-        StringBuilder result = new StringBuilder();
-        result.append("Service,").append("Operation,").append("Currency,").append("Value,").append("\n");
-
-        for (Usage usage : usages) {
-            result.append(usage.service()).append(",")
-                    .append(usage.operation()).append(",")
-                    .append(usage.currency()).append(",")
-                    .append(decimalFormat.format(usage.value())).append(",\n")
-                    .append(usage.value()).append(",\n");
-        }
-
-        return result.toString();
     }
 
     @Tool(description = "Return all the discounts by services and operations in all the regions for a given period.")
     public String getDiscounts(
             @ToolArg(description = "Start date in format of yyyy-MM-dd") String startDate,
             @ToolArg(description = "End date in format of yyyy-MM-dd") String endDate,
-            @ToolArg(description = "AWS regions where the discounts should be retrieved. In case we want to get the discounts for resources in all regions, we should provide an empty list.") List<String> regions
+            @ToolArg(description = "AWS regions where the discounts should be retrieved. In case we want to get the " +
+                    "discounts for resources in all regions, we should provide an empty list.") List<String> regions
     ) {
-        if (!Utils.isValidDate(startDate)) {
-            throw new ToolCallException("Invalid start date: " + startDate);
-        }
-
-        if (!Utils.isValidDate(endDate)) {
-            throw new ToolCallException("Invalid start date: " + startDate);
-        }
+        Utils.validateStartEndEndDate(startDate, endDate);
 
         List<Expression> filterExpressionList = new ArrayList<>();
 
@@ -163,59 +163,64 @@ public class CostExplorer {
             filterExpression = Expression.builder().and(filterExpressionList).build();
         }
 
-
-        // Create the request
-        GetCostAndUsageRequest request = GetCostAndUsageRequest.builder()
-                .timePeriod(DateInterval.builder()
-                        .start(startDate)
-                        .end(endDate)
-                        .build())
-                .granularity(Granularity.MONTHLY)
-                .metrics(List.of("UnblendedCost"))
-                .filter(filterExpression)
-                .groupBy(GroupDefinition.builder()
-                                .type(GroupDefinitionType.DIMENSION)
-                                .key("SERVICE")
-                                .build(),
-                        GroupDefinition.builder()
-                                .type(GroupDefinitionType.DIMENSION)
-                                .key("RECORD_TYPE")
-                                .build()
-                )
-                .build();
-
-        // Get the cost data
-        GetCostAndUsageResponse response = costExplorerClient.getCostAndUsage(request);
-
-        record Discount(String service, String type, Double value, String currency) {
-        }
-
         List<Discount> discounts = new ArrayList<>();
 
-        for (ResultByTime result : response.resultsByTime()) {
-            for (Group group : result.groups()) {
-                double cost = Double.parseDouble(group.metrics().get("UnblendedCost").amount());
+        Map<String, Double> totalDiscountPerCurrency = new HashMap<>();
 
-                String serviceName = group.keys().getFirst();
-                String operation = group.keys().getLast();
-                String currency = group.metrics().get("UnblendedCost").unit();
-                discounts.add(new Discount(serviceName, operation, cost, currency));
+        String nextPageToken = null;
+
+        do {
+            GetCostAndUsageRequest request = GetCostAndUsageRequest.builder()
+                    .timePeriod(DateInterval.builder()
+                            .start(startDate)
+                            .end(endDate)
+                            .build())
+                    .granularity(Granularity.MONTHLY)
+                    .metrics(List.of("UnblendedCost"))
+                    .filter(filterExpression)
+                    .groupBy(GroupDefinition.builder()
+                                    .type(GroupDefinitionType.DIMENSION)
+                                    .key("SERVICE")
+                                    .build(),
+                            GroupDefinition.builder()
+                                    .type(GroupDefinitionType.DIMENSION)
+                                    .key("RECORD_TYPE")
+                                    .build()
+                    )
+                    .nextPageToken(nextPageToken)
+                    .build();
+
+            // Get the cost data
+            GetCostAndUsageResponse response = costExplorerClient.getCostAndUsage(request);
+
+            for (ResultByTime result : response.resultsByTime()) {
+                for (Group group : result.groups()) {
+                    double discount = Double.parseDouble(group.metrics().get("UnblendedCost").amount());
+
+                    String serviceName = group.keys().getFirst();
+                    String discountType = group.keys().getLast();
+                    String currency = group.metrics().get("UnblendedCost").unit();
+                    discounts.add(new Discount.Builder()
+                            .serviceName(serviceName)
+                            .discountType(discountType)
+                            .currency(currency).value(discount)
+                            .build());
+                    totalDiscountPerCurrency.compute(currency, (key, value) ->
+                            value == null ? 0 : value + discount);
+                }
             }
+
+            nextPageToken = response.nextPageToken();
+        } while (nextPageToken != null);
+
+        discounts.sort((a, b) -> Double.compare(b.value(), a.value()));
+
+        DiscountReport discountReport = new DiscountReport(discounts, totalDiscountPerCurrency);
+
+        try {
+            return discountReport.build();
+        } catch (Exception e) {
+            throw new ToolCallException("Could not create report!", e);
         }
-
-        discounts.sort((a, b) -> Double.compare(b.value, a.value));
-
-        StringBuilder result = new StringBuilder();
-        result.append("Service,").append("Discount Type,").append("Currency,").append("Value,").append("\n");
-
-        for (Discount discount : discounts) {
-            result.append(discount.service()).append(",")
-                    .append(discount.type()).append(",")
-                    .append(discount.currency()).append(",")
-                    .append(decimalFormat.format(discount.value())).append(",\n")
-                    .append(discount.value()).append(",\n");
-        }
-
-        return result.toString();
     }
 }
